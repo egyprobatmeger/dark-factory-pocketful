@@ -686,18 +686,20 @@ CLIENT_JS = r"""
     var cur = document.querySelector(sel);
     if (cur && node) cur.replaceWith(node);
   }
-  async function refreshPage(){
+  async function fetchWalletFeed(){
     var seq = ++refreshSeq;
     try {
       var res = await fetch("/api/ui/refresh");
-      if (!res.ok) return;
+      if (!res.ok) return false;
       var html = await res.text();
-      if (seq !== refreshSeq) return;   // latest refresh wins
+      if (seq !== refreshSeq) return false;   // latest refresh wins
       var frags = renderFragments(html);
       if (frags.wallet) replaceBlock('[data-testid="wallet"]', frags.wallet);
       if (frags.feed) replaceBlock('[data-testid="feed-card"]', frags.feed);
-    } catch (e) { /* keep current state */ }
+      return true;
+    } catch (e) { /* keep current state */ return false; }
   }
+  async function refreshPage(){ await fetchWalletFeed(); }
   function wireRefresh(){
     var b = document.querySelector('[data-testid="wallet-refresh"]');
     if (b) b.addEventListener("click", function(){ refreshPage(); });
@@ -833,11 +835,12 @@ CLIENT_JS = r"""
   }
   // For actions whose button lives inside the re-rendered area: refresh first so
   // the list shows the new state, then surface the refusal in the error slot so
-  // the re-render cannot wipe it out.
+  // the re-render cannot wipe it out. On success the wallet and feed are
+  // refreshed too, so the money movement is visible on the same page.
   async function actThenRefresh(r, slot, page){
     var refused = r.status >= 400 && r.status < 500;
     if (r.ok || refused) await rerender(page);
-    if (r.ok) return true;
+    if (r.ok) { await fetchWalletFeed(); return true; }
     if (refused) { show(slot, errText(r)); return false; }
     show(slot, "Network error — the action may have gone through.");
     return false;
