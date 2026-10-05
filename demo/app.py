@@ -2169,7 +2169,7 @@ class Handler(BaseHTTPRequestHandler):
         if method == "POST" and path in ("/signup", "/login"):
             self._auth_html(path, body)
             return None
-        if method == "POST" and path == "/auth/logout":
+        if method in ("POST", "GET") and path == "/auth/logout":
             return self._ui_logout()
         if method == "GET" and path == "/api/ui/refresh":
             self._ui_refresh_fragments(caller)
@@ -2343,7 +2343,8 @@ class Handler(BaseHTTPRequestHandler):
         self._send_html(200, html_text)
 
     def _ui_logout(self):
-        self._redirect("/", 302, clear_cookie=True)
+        self._redirect("/", 302,
+                       set_cookie=SESSION_COOKIE + "=; Path=/; Max-Age=0; HttpOnly")
 
     def _do_write(self, caller, path, body, handler):
         key = self.headers.get("Idempotency-Key")

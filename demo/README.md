@@ -17,3 +17,12 @@ Demo accounts (play money, EUR):
 
 Or register your own account. The service keeps state in memory;
 on a cold start it re-seeds the two demo accounts above.
+
+Packaging repair note (2026-10-05, this demo copy only): the stage-4
+UI's Log out button navigates to GET /auth/logout, which the service
+did not route (it answered a raw 404 JSON), and the logout handler
+itself crashed on an invalid argument. In this demo copy only,
+app.py now routes GET /auth/logout like POST and the handler clears
+the session cookie with a valid redirect (two lines). The judged
+submission code (stage-1..stage-4) is unchanged — byte-identical to
+what the factory produced.
