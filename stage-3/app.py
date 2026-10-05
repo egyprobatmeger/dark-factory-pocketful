@@ -33,7 +33,7 @@ SCRYPT_P = 1
 
 
 def now_rfc3339():
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+    return datetime.now(timezone.utc).isoformat()
 
 
 def is_integral_number(v):
@@ -260,10 +260,11 @@ def new_fixture_state(fx, at):
             "created_at": created, "seq": s.next_seq(), "seeded": True,
             "revisions": [rev1(p["amount"], created)],
         }
+        # Fixture balances are ENDING balances: opening = ending − net delta.
         if p["from_user_id"] in s.opening:
-            s.opening[p["from_user_id"]] -= p["amount"]
+            s.opening[p["from_user_id"]] += p["amount"]
         if p["to_user_id"] in s.opening:
-            s.opening[p["to_user_id"]] += p["amount"]
+            s.opening[p["to_user_id"]] -= p["amount"]
     for r in fx.get("requests", []):
         s.requests[r["id"]] = {
             "request_id": r["id"], "requester_id": r["requester_id"],
@@ -576,7 +577,7 @@ def payment_obj(s, p, amount=None):
         "from_handle": s.users[p["from_user_id"]]["handle"],
         "to_user_id": p["to_user_id"],
         "to_handle": s.users[p["to_user_id"]]["handle"],
-        "amount": p["amount"],
+        "amount": p["amount"] if amount is None else amount,
         "currency": s.currency,
         "note": p["note"],
         "visibility": p["visibility"],
@@ -1362,10 +1363,11 @@ def post_capture(body, caller, authorization_id, idem):
     return 201, resp
 
 
-def _all_boundaries(s, uid, now_dt):
+def _all_boundaries(s, uid, known_dt):
     """Every effective time of the user's payments and every hold event time,
-    plus now. The balance/available step functions are constant between these."""
-    times = [now_dt]
+    plus the known instant. The balance/available step functions are constant
+    between these."""
+    times = [known_dt]
     for p in s.payments.values():
         if p["from_user_id"] != uid and p["to_user_id"] != uid:
             continue
@@ -1385,18 +1387,22 @@ def _all_boundaries(s, uid, now_dt):
     return sorted(t for t in times if t is not None)
 
 
-def historical_ok(s, uid, now_dt):
+def historical_ok(s, uid, known_dt):
     """True when the user's total and available stay nonnegative at every
-    effective/event boundary, under the latest known revisions."""
-    for t in _all_boundaries(s, uid, now_dt):
-        total = balance_at(s, uid, t, now_dt)
-        if total < 0:
-            return False
-        avail = total - held_at(s, uid, t, now_dt)
-        if avail < 0:
-            return False
-    earliest = _all_boundaries(s, uid, now_dt)[0]
-    if balance_at(s, uid, earliest, now_dt, before=True) < 0:
+    effective/event boundary, under the revisions recorded at or before
+    known_dt. The step functions are right-continuous, so each boundary is
+    sampled at the boundary itself AND just after it (the interval that
+    follows)."""
+    for t in _all_boundaries(s, uid, known_dt):
+        for tt in (t, t + timedelta(microseconds=1)):
+            total = balance_at(s, uid, tt, known_dt)
+            if total < 0:
+                return False
+            avail = total - held_at(s, uid, tt, known_dt)
+            if avail < 0:
+                return False
+    earliest = _all_boundaries(s, uid, known_dt)[0]
+    if balance_at(s, uid, earliest, known_dt, before=True) < 0:
         return False
     return True
 
@@ -1478,7 +1484,8 @@ def post_correction(body, caller, payment_id, idem):
         # decrease debits the receiver.
         s.users[frm]["balance"] -= diff
         s.users[to]["balance"] += diff
-        if not historical_ok(s, frm, now_dt) or not historical_ok(s, to, now_dt):
+        # The new revision is known from its own recorded time.
+        if not historical_ok(s, frm, recorded_dt) or not historical_ok(s, to, recorded_dt):
             # Roll back: drop the revision and the balances.
             p["revisions"].pop()
             s.users[frm]["balance"] += diff
@@ -1710,13 +1717,15 @@ def import_state(body):
         else:
             # Stage-1/2 exports carry no openings: derive them from the
             # already-net balances and every payment's original (rev 1) amount.
+            # Ending balance = opening + net delta of every original payment,
+            # so opening = ending - net delta (sender: minus(-amt) = +amt).
             s.opening = {u["id"]: u["balance"] for u in users.values()}
             for p in s.payments.values():
                 amt = p["revisions"][0]["amount"]
                 if p["from_user_id"] in s.opening:
-                    s.opening[p["from_user_id"]] -= amt
+                    s.opening[p["from_user_id"]] += amt
                 if p["to_user_id"] in s.opening:
-                    s.opening[p["to_user_id"]] += amt
+                    s.opening[p["to_user_id"]] -= amt
         _STATE = s
     return 204, None
 
@@ -1978,6 +1987,10 @@ class Handler(BaseHTTPRequestHandler):
             return get_activity(None, caller, q)
         if method == "GET" and path == "/authorizations":
             return get_authorizations(None, caller, q)
+        if method == "GET":
+            m = PAYMENT_ACTIONS.match(path)
+            if m and m.group(2) == "revisions":
+                return get_revisions(None, caller, m.group(1))
         if method == "POST":
             if path == "/payments":
                 return self._do_write(caller, path, body, post_payment)
@@ -2010,14 +2023,11 @@ class Handler(BaseHTTPRequestHandler):
                 if action == "void":
                     return post_void(None, caller, aid)
             m = PAYMENT_ACTIONS.match(path)
-            if m:
-                pid, action = m.group(1), m.group(2)
-                if action == "corrections" and method == "POST":
-                    return self._do_write(
-                        caller, path, body,
-                        lambda b, c, i: post_correction(b, c, pid, i))
-                if action == "revisions" and method == "GET":
-                    return get_revisions(None, caller, pid)
+            if m and m.group(2) == "corrections":
+                pid = m.group(1)
+                return self._do_write(
+                    caller, path, body,
+                    lambda b, c, i: post_correction(b, c, pid, i))
         return error(404, "not_found", "no such resource")
 
     def _dispatch_unauth(self, method, path, q, body):
