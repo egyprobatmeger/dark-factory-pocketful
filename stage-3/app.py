@@ -520,6 +520,10 @@ def held_at(s, uid, t, known_dt):
         created_dt = a.get("created_dt") or parse_rfc3339(a["created_at"])
         if created_dt is None or created_dt > known_dt:
             continue
+        # A hold starts at authorization creation: nothing is held before that
+        # instant, regardless of expiry or closure. (Mirrors the expiry gate.)
+        if t < created_dt:
+            continue
         caps = 0
         for pid in a.get("payment_ids", []):
             cp = s.payments.get(pid)
