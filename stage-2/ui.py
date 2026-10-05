@@ -17,14 +17,20 @@ def esc(v):
             .replace(">", "&gt;").replace('"', "&quot;"))
 
 
+def amount_text(minor, minor_units):
+    """Decimal text a person types: 1500 with 2 places is '15.00'."""
+    if minor_units == 0:
+        return str(minor)
+    text = str(minor).rjust(minor_units + 1, "0")
+    return "{}.{}".format(text[:-minor_units], text[-minor_units:])
+
+
 def money(minor, minor_units, currency):
     if minor_units == 0:
         return "{} {}".format(minor, currency)
-    sign = "-" if minor < 0 else ""
-    minor = abs(int(minor))
-    text = str(minor).rjust(minor_units + 1, "0")
-    return "{}{}.{} {}".format(sign, text[:-minor_units], text[-minor_units:],
-                               currency)
+    return "{}{} {}".format("-" if minor < 0 else "",
+                            amount_text(abs(int(minor)), minor_units),
+                            currency)
 
 
 def fmt_ts(iso):
@@ -538,7 +544,13 @@ def authz_item(dm, a):
             inputmode="decimal" autocomplete="off" value="{}">
           <button type="button" class="btn btn-primary btn-small"
             data-testid="authorization-capture-{}" data-aid="{}">Capture</button>
-        </div>""".format(aid, aid, esc(remaining), aid, aid)
+        </div>""".format(aid, aid, esc(amount_text(remaining, dm["mu"])), aid, aid)
+    closed_hint = ""
+    if a["status"] in ("voided", "expired"):
+        hint = STATUS_LABELS.get(a["status"], a["status"])
+        closed_hint = """<div class="meta"><span class="chip status-{st}">{hint}</span>
+          <span>closed — no further captures</span></div>""".format(
+              st=a["status"], hint=esc(hint))
     voidbtn = ""
     if mine and a["status"] == "open":
         voidbtn = """<div class="actions">
@@ -819,6 +831,17 @@ CLIENT_JS = r"""
     show(slot, "Network error — the action may have gone through.");
     return false;
   }
+  // For actions whose button lives inside the re-rendered area: refresh first so
+  // the list shows the new state, then surface the refusal in the error slot so
+  // the re-render cannot wipe it out.
+  async function actThenRefresh(r, slot, page){
+    var refused = r.status >= 400 && r.status < 500;
+    if (r.ok || refused) await rerender(page);
+    if (r.ok) return true;
+    if (refused) { show(slot, errText(r)); return false; }
+    show(slot, "Network error — the action may have gone through.");
+    return false;
+  }
   async function rerender(page){
     try {
       var res = await fetch(page + "?_rerender=1", {headers: {
@@ -837,15 +860,14 @@ CLIENT_JS = r"""
         btn.addEventListener("click", async function(){
           var rid = btn.getAttribute("data-rid"), act = btn.getAttribute("data-act");
           hide("request-error");
-          var r;
-          if (act === "pay") {
-            var key = await keyFor("requestpay", {rid: rid});
-            r = await api("/requests/" + rid + "/pay", {}, key);
-          } else {
-            r = await api("/requests/" + rid + "/" + act, {});
-          }
-          var ok = await actionResult(r, "request-error");
-          if (ok || (r.status >= 400 && r.status < 500)) await rerender("/requests");
+           var r;
+           if (act === "pay") {
+             var key = await keyFor("requestpay", {rid: rid});
+             r = await api("/requests/" + rid + "/pay", {}, key);
+           } else {
+             r = await api("/requests/" + rid + "/" + act, {});
+           }
+           actThenRefresh(r, "request-error", "/requests");
         });
       });
   }
@@ -865,8 +887,7 @@ CLIENT_JS = r"""
           }
           var key = await keyFor("capture", {aid: aid, amount: body.amount || "remaining"});
           var r = await api("/authorizations/" + aid + "/capture", body, key);
-          var ok = await actionResult(r, "authorization-error");
-          if (ok || (r.status >= 400 && r.status < 500)) await rerender("/authorizations");
+          actThenRefresh(r, "authorization-error", "/authorizations");
         });
       });
     document.querySelectorAll('[data-testid^="authorization-void-"]').forEach(function(btn){
@@ -874,8 +895,7 @@ CLIENT_JS = r"""
         var aid = btn.getAttribute("data-aid");
         hide("authorization-error");
         var r = await api("/authorizations/" + aid + "/void", {});
-        var ok = await actionResult(r, errEl);
-        if (ok || (r.status >= 400 && r.status < 500)) await rerender("/authorizations");
+        actThenRefresh(r, "authorization-error", "/authorizations");
       });
     });
   }
