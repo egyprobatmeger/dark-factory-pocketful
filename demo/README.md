@@ -23,6 +23,9 @@ UI's Log out button navigates to GET /auth/logout, which the service
 did not route (it answered a raw 404 JSON), and the logout handler
 itself crashed on an invalid argument. In this demo copy only,
 app.py now routes GET /auth/logout like POST and the handler clears
-the session cookie with a valid redirect (two lines). The judged
+the session cookie with a valid redirect (two lines). The login page (ui.py) also lists the
+two demo accounts above, so visitors reaching the live demo can sign
+in — the lablab submission's Additional Information field is not
+shown on the public submission page. The judged
 submission code (stage-1..stage-4) is unchanged — byte-identical to
 what the factory produced.

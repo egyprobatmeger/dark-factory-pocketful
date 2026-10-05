@@ -262,6 +262,11 @@ def render_login(error_msg=None):
   <button type="submit" class="btn btn-primary" data-testid="login-submit" style="width:100%">Log in</button>
 </form>
 <p class="auth-foot">New here? <a href="/signup">Create an account</a></p>
+<div style="margin-top:14px;padding:10px 12px;border:1px dashed #3a4a5f;border-radius:10px;font-size:13px;line-height:1.6">
+<strong>Demo accounts</strong> (play money only, EUR 1,000.00 each):<br>
+demo-a@example.com / demo-pass-123<br>
+demo-b@example.com / demo-pass-456
+</div>
 </div>""".format(err=err)
     return shell("Log in", "login", content, client=CLIENT_JS)
 

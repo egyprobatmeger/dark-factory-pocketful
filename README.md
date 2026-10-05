@@ -7,6 +7,12 @@ a payments service built in four stages by three AI seats coordinating in
 a single Band room, launched by exactly one human message and completed
 with no further human input.
 
+## Live demo
+
+Try the finished stage-4 service: https://whynot-pocketful-demo.onrender.com
+— sign-in is required; the two demo accounts (play money only) are
+listed on the login page and in `demo/README.md`.
+
 ## What Pocketful is
 
 Pocketful is a staged payments-service specification. Each `stage-N/`
