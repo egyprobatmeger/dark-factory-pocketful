@@ -1,6 +1,6 @@
 # Pocketful — built by an AI Dark Factory
 
-**WeAreDevelopers × BAND — AI Dark Factory hackathon, "pocketful" track.**
+**WeAreDevelopers × BAND — AI Dark Factory hackathon, "pocketful" track — team Whynot.**
 
 This repository is the complete output of one autonomous agent-team run:
 a payments service built in four stages by three AI seats coordinating in
