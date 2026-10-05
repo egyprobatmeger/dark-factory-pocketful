@@ -389,13 +389,12 @@ def feed_item(dm, p):
     pid = p["payment_id"]
     me = dm["handle"]
     outgoing = p["from_handle"] == me
-    parties = "You → {}".format(esc(p["to_handle"])) if outgoing \
-        else "{} → You".format(esc(p["from_handle"]))
+    parties = "{} → {}".format(esc(p["from_handle"]), esc(p["to_handle"]))
     note = esc(p["note"]) if p["note"] else ""
     arrow = ('<span class="out">&#8595; out</span>' if outgoing
              else '<span class="in">&#8593; in</span>')
     return """<div class="item" data-testid="activity-item-{pid}" data-visibility="{vis}">
-  <div class="amt">{arrow} {amt}</div>
+  <div class="amt">{arrow} <span data-testid="activity-amount-{pid}">{amt}</span></div>
   <div class="item-main">
     <div class="parties" data-testid="activity-parties-{pid}">{parties}</div>
     <div class="meta"><span class="note" data-testid="activity-note-{pid}">{note}</span>
@@ -447,17 +446,17 @@ def request_item(dm, r):
         if incoming:
             actions = """<div class="actions">
               <button type="button" class="btn btn-danger btn-small"
-                data-testid="request-decline-{rid}" data-rid="{rid}" data-act="decline">Decline</button>
+                data-testid="request-decline-{}" data-rid="{}" data-act="decline">Decline</button>
               <button type="button" class="btn btn-primary btn-small"
-                data-testid="request-pay-{rid}" data-rid="{rid}" data-act="pay">Pay now</button>
-            </div>"""
+                data-testid="request-pay-{}" data-rid="{}" data-act="pay">Pay now</button>
+            </div>""".format(esc(rid), esc(rid), esc(rid), esc(rid))
         else:
             actions = """<div class="actions">
               <button type="button" class="btn btn-quiet btn-small"
-                data-testid="request-cancel-{rid}" data-rid="{rid}" data-act="cancel">Cancel</button>
-            </div>"""
+                data-testid="request-cancel-{}" data-rid="{}" data-act="cancel">Cancel</button>
+            </div>""".format(esc(rid), esc(rid))
     return """<div class="item" data-testid="request-item-{rid}" data-status="{status}">
-  <div class="amt">{amt}</div>
+  <div class="amt"><span data-testid="request-amount-{rid}">{amt}</span></div>
   <div class="item-main">
     <div class="parties"><span class="dot {vis}"></span>{party} {verb} this</div>
     <div class="meta"><span class="chip status-{status}">{label}</span>
@@ -535,17 +534,17 @@ def authz_item(dm, a):
     if not mine and a["status"] == "open":
         remaining = a["remaining_amount"]
         capture = """<div class="capture-row">
-          <input type="text" data-testid="authorization-capture-amount-{aid}" data-aid="{aid}"
-            inputmode="decimal" autocomplete="off" value="{rem}">
+          <input type="text" data-testid="authorization-capture-amount-{}" data-aid="{}"
+            inputmode="decimal" autocomplete="off" value="{}">
           <button type="button" class="btn btn-primary btn-small"
-            data-testid="authorization-capture-{aid}" data-aid="{aid}">Capture</button>
-        </div>"""
+            data-testid="authorization-capture-{}" data-aid="{}">Capture</button>
+        </div>""".format(aid, aid, esc(remaining), aid, aid)
     voidbtn = ""
     if mine and a["status"] == "open":
         voidbtn = """<div class="actions">
           <button type="button" class="btn btn-danger btn-small"
-            data-testid="authorization-void-{aid}" data-aid="{aid}">Void</button>
-        </div>"""
+            data-testid="authorization-void-{}" data-aid="{}">Void</button>
+        </div>""".format(aid, aid)
     captured = ""
     if a["status"] == "captured":
         captured = """<div class="meta"><span class="chip status-captured">Captured</span>
@@ -822,7 +821,8 @@ CLIENT_JS = r"""
   }
   async function rerender(page){
     try {
-      var res = await fetch(page + "?_rerender=1", {headers: {"X-Rerender": "1"}});
+      var res = await fetch(page + "?_rerender=1", {headers: {
+        "Accept": "text/html", "X-Rerender": "1"}});
       if (!res.ok) return;
       var html = await res.text();
       var doc = new DOMParser().parseFromString(html, "text/html");

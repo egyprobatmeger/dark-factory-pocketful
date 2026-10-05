@@ -1241,6 +1241,14 @@ AUTH_ACTIONS = re.compile(r"^/authorizations/([^/]+)/(capture|void)$")
 SESSION_COOKIE = "pocketful_session"
 UI_HTML_ACCEPTS = ("/", "/requests", "/split", "/signup", "/login",
                    "/authorizations")
+_AUTH_ERROR_TEXT = {
+    "email_taken": "An account with that email already exists.",
+    "handle_taken": "That account name is already taken.",
+    "unauthenticated": "Incorrect email or password.",
+    "validation_failed": "Check your details — the email must be valid and "
+                         "the password at least 8 characters.",
+    "malformed_request": "Something went wrong. Please try again.",
+}
 
 
 def resolve_caller(headers, s):
@@ -1356,22 +1364,27 @@ class Handler(BaseHTTPRequestHandler):
         except UnicodeDecodeError:
             return "", True
 
-    UI_GET_ROUTES = ("/", "/requests", "/split", "/signup", "/login",
-                     "/authorizations")
+    UI_ROUTES = ("/", "/requests", "/split", "/authorizations")
+    AUTH_UI_ROUTES = ("/signup", "/login")
+    AUTH_API = {"/signup": "/auth/signup", "/login": "/auth/login"}
 
     def _handle(self, method):
         try:
             parts = urlsplit(self.path)
             path = parts.path
             q = parse_query(parts.query)
-            if method == "GET" and path in self.UI_GET_ROUTES and \
-                    self._wants_html():
+            html = self._wants_html()
+            if method == "GET" and (path in self.UI_ROUTES or
+                                    path in self.AUTH_UI_ROUTES) and html:
                 self._ui_page(path)
                 return
             caller, body, bad = self._preauth(method, path)
             if bad:
                 return
-            if caller is not None:
+            if path in ("/health", "/_test/reset", "/_test/export",
+                        "/_test/import", "/auth/signup", "/auth/login"):
+                outcome = self._dispatch_unauth(method, path, q, body)
+            elif caller is not None:
                 outcome = self._dispatch(method, path, q, caller, body)
             else:
                 outcome = self._dispatch_unauth(method, path, q, body)
@@ -1391,7 +1404,7 @@ class Handler(BaseHTTPRequestHandler):
     PUBLIC_PATHS = ("/health", "/_test/reset", "/_test/export", "/_test/import",
                     "/auth/signup", "/auth/login",
                     "/", "/requests", "/split", "/signup", "/login",
-                    "/authorizations")
+                    "/authorizations")  # POST /signup|/login handled in dispatch
 
     def _preauth(self, method, path):
         """Read body + resolve caller. Returns (caller, body_text, fatal)."""
@@ -1438,11 +1451,28 @@ class Handler(BaseHTTPRequestHandler):
             '</body></html>'.format(frag_wallet, frag_feed))
         self._send_html(200, html_text)
 
+    def _auth_html(self, path, body):
+        """Browser form submit on /login or /signup (Accept: text/html)."""
+        handler = auth_signup if path == "/signup" else auth_login
+        parsed, malformed = _json_text(body)
+        if malformed:
+            parsed = {}
+        status, payload = handler(parsed, None)
+        if status in (200, 201):
+            cookie = "{}={}; Path=/; HttpOnly".format(SESSION_COOKIE,
+                                                      payload["token"])
+            self._redirect("/", 302, cookie)
+            return
+        msg = _AUTH_ERROR_TEXT.get(payload.get("error", {}).get("code", ""),
+                                   "Something went wrong. Please try again.")
+        html_text = ui.render_signup(msg) if path == "/signup" \
+            else ui.render_login(msg)
+        self._send_html(200, html_text)
+
     def _dispatch(self, method, path, q, caller, body):
-        # UI routes (HTML) and UI action endpoints
-        if self._wants_html() and path in ("/", "/requests", "/split", "/signup",
-                                           "/login", "/authorizations"):
-            return self._ui_page(path)
+        if method == "POST" and path in ("/signup", "/login"):
+            self._auth_html(path, body)
+            return None
         if method == "POST" and path == "/auth/logout":
             return self._ui_logout()
         if method == "GET" and path == "/api/ui/refresh":
@@ -1490,6 +1520,9 @@ class Handler(BaseHTTPRequestHandler):
         return error(404, "not_found", "no such resource")
 
     def _dispatch_unauth(self, method, path, q, body):
+        if method == "POST" and path in ("/signup", "/login"):
+            self._auth_html(path, body)
+            return None
         if method == "GET" and path == "/health":
             return 200, {"status": "ok"}
         if path in ("/", "/split", "/authorizations", "/requests"):
