@@ -47,6 +47,13 @@ Status: decided (see "decided" markers). Items left open must be resolved before
 - O23 (new) export/import: import body must be object with track=="pocketful", format_version==1 (int, not bool), state == valid state shape (validated like reset + tokens/idempotency/seq); invalid → 422, no change. Export = 200 {"track","format_version","state"}; state = internal State dict (users incl. password hashes, tokens, idempotency store, seq, counters, operators, currency). Reset = new state from fixture (clears imported data).
 - O24 (new) scrypt params n=2**12, r=8, p=1, salt 16B, dklen=64 — fast enough for the 10-client login burst, still a strong KDF.
 
+## Learned during verification (s1-run-1 → s1-run-2)
+- Missing required fields (`to_handle`, `payer_handle`, `email`, `password`,
+  settlement `from_handle`/`to_handle`) are 422 validation_failed per the
+  §5 table; the 400/wrong-type rule only applies to PRESENT fields of the
+  wrong JSON type. This was the only failure in s1-run-1 (146/147); fixed,
+  s1-run-2 = 147/147.
+
 ## Risks / watch-list
 - R1 Hidden judge tests beyond shipped stage_1 files (kickoff ships partial suites). Rely on spec text, especially §5 error matrix and §7 ordering.
 - R2 "Failed request keys remain reusable": ensure 4xx claim never happens (claim only on success path, under lock, after effect applied).

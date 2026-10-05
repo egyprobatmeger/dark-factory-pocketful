@@ -451,8 +451,10 @@ def parse_page_params(q, has_direction, has_status, direction_values, status_val
 def auth_signup(body, _caller=None):
     if not isinstance(body, dict):
         return error(400, "malformed_request", "body must be a JSON object")
-    email = body.get("email")
-    password = body.get("password")
+    if "email" not in body or "password" not in body:
+        return error(422, "validation_failed", "email and password are required")
+    email = body["email"]
+    password = body["password"]
     if not isinstance(email, str) or not isinstance(password, str):
         return error(400, "malformed_request", "email and password must be strings")
     display = body.get("display_name", "")
@@ -479,8 +481,10 @@ def auth_signup(body, _caller=None):
 def auth_login(body, _caller=None):
     if not isinstance(body, dict):
         return error(400, "malformed_request", "body must be a JSON object")
-    email = body.get("email")
-    password = body.get("password")
+    if "email" not in body or "password" not in body:
+        return error(422, "validation_failed", "email and password are required")
+    email = body["email"]
+    password = body["password"]
     if not isinstance(email, str) or not isinstance(password, str):
         return error(400, "malformed_request", "email and password must be strings")
     if not valid_email(email):
@@ -517,7 +521,9 @@ def post_payment(body, caller, idem):
             if status == 409:
                 return error(409, "idempotency_key_reuse")
             return status, stored
-        to_handle = body.get("to_handle")
+        if "to_handle" not in body:
+            return error(422, "validation_failed", "to_handle is required")
+        to_handle = body["to_handle"]
         if not isinstance(to_handle, str):
             return error(400, "malformed_request", "to_handle must be a string")
         amount = body.get("amount")
@@ -555,7 +561,9 @@ def post_request(body, caller, idem):
             if status == 409:
                 return error(409, "idempotency_key_reuse")
             return status, stored
-        payer_handle = body.get("payer_handle")
+        if "payer_handle" not in body:
+            return error(422, "validation_failed", "payer_handle is required")
+        payer_handle = body["payer_handle"]
         if not isinstance(payer_handle, str):
             return error(400, "malformed_request", "payer_handle must be a string")
         amount = body.get("amount")
@@ -761,11 +769,14 @@ def post_settlement(body, caller, idem):
         for t in transfers:
             if not isinstance(t, dict):
                 return error(422, "validation_failed", "transfer must be an object")
-            frm_h = t.get("from_handle")
-            to_h = t.get("to_handle")
+            if "from_handle" not in t or "to_handle" not in t:
+                return error(422, "validation_failed",
+                             "from_handle and to_handle are required")
+            frm_h = t["from_handle"]
+            to_h = t["to_handle"]
             if not isinstance(frm_h, str) or not isinstance(to_h, str):
                 return error(400, "malformed_request",
-                              "handles must be strings")
+                             "handles must be strings")
             frm_id = s.handles.get(frm_h)
             to_id = s.handles.get(to_h)
             if frm_id is None or to_id is None:
