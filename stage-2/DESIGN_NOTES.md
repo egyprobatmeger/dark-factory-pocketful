@@ -82,10 +82,25 @@ Base: verified stage-1 tree (revision 3414286). Stage-1 spec remains fully in fo
   status chips, direction arrows (in/out), visibility dot (public/private),
   labeled inputs, visible focus rings, 375px-clean single column, no h-scroll.
 
-## Open items (resolve before first harness run)
-- [ ] O1: `final` wrong type (e.g. "true") → 400 malformed_request? (no field-exception
-      listed; keep 400). Risk: low.
-- [ ] O2: seeded auth `expires_at` naive (no offset) → treat as UTC and accept.
-- [ ] O3: UI / when not signed in → 302 to /login (no 401 HTML).
-- [ ] O4: activity-note element for empty note: render element with empty text
-      (no placeholder text that would change text_content).
+## Open items — all resolved
+- [x] O1: `final` wrong type → 400 malformed_request (implemented).
+- [x] O2: naive `expires_at` parsed as UTC (implemented in parse_rfc3339).
+- [x] O3: signed-out UI gets → 302 /login (implemented).
+- [x] O4: empty-note element rendered with empty text (implemented).
+
+## Learned during verification (s2-run-1 → s2-run-6)
+- Public endpoints must also serve REQUESTS WITH TOKENS: the harness's
+  authenticated clients call /_test/* and /auth/* with Authorization headers.
+  Route public paths to their handlers regardless of a valid token.
+- Error elements (pay-error, request-error, ...) must be ABSENT from the DOM
+  when there is no error — the suites use query_selector(...)==None. Created
+  on demand, removed on success. (CSS display:none is not enough.)
+- List containers (incoming-list, outgoing-list, authorization-list,
+  activity-list) must always render and be visible; empty state inside.
+- activity-parties-* must contain BOTH raw handles (no "You").
+- request-amount-*/activity-amount-* testids ride on the amount span.
+- Browser fetch() to our own HTML routes needs Accept: text/html, else the
+  Accept-sniffing returns JSON (404/401 envelope) and rerender breaks.
+- python str.format does not recurse into substituted values: sub-templates
+  carrying their own placeholders (buttons with data-rid) must be formatted
+  first with .format() on themselves.
