@@ -1,62 +1,91 @@
-# Pocketful stage 1 — design notes
+# Pocketful stage 2 — design notes
 
-Status: decided (see "decided" markers). Items left open must be resolved before the final check run.
+Base: verified stage-1 tree (revision 3414286). Stage-1 spec remains fully in force.
 
-## Decisions (closed)
-- D1 Language/stack: Python 3 stdlib only (`http.server.ThreadingHTTPServer`). No third-party deps → image build needs no RUN at all (VM cannot run docker RUN; see AGENTS.md). Base `python:3.12-alpine` (re-imported 2026-10-05).
-- D2 Concurrency: one global `threading.Lock` around ALL state mutation and all state reads that pair with a write (feeds, idempotency, split, settlement). Single lock → atomicity + conservation hold trivially; 50 in-flight requests serialize in microseconds (in-memory, no I/O). `request_queue_size=256`, `daemon_threads=True`.
-- D3 State: single `State` object = dict users/handles, payments, requests, tokens, idempotency, operators, currency, seq counters. Reset = replace whole object under lock. Export = `json.dumps` snapshot under lock; import = validate then replace under lock. Export content = the exact same shape reset consumes, extended with `tokens` and `idempotency` (opac. to caller; must round-trip: login works after import, tokens valid, idempotency replays survive, failed keys stay reusable).
-- D4 Id = `"p_" + uuid4hex[:16]` style, ≤64 chars, unique (uuid4, collision check under lock).
-- D5 Amount validation: JSON value must be int (bool excluded) or float/number with integer value; accept via manual parse of the raw JSON token? NO — parse body with `json.loads` but track "integer-valued": Python json parses `1e3` → float 1000.0, `1000.0` → float, `1000` → int. Valid amount = (int and not bool) or (float and float.is_integer()). Rejected → 422 validation_failed. Range 1..1_000_000_000.
-- D6 Wrong-type rule: body must parse as JSON object else 400 malformed_request. A field present with wrong JSON type (e.g. `amount: "12"`, `note: null`, `to_handle: 5`) → 400 malformed_request. EXCEPTIONS (→ 422 validation_failed): `amount` invalid in any form (incl. string/bool), `note` non-string incl. null, `visibility` not public/private. See item 3 (trap: `visibility: 5` — string vs number → 400; `visibility: null` → 422).
-- D7 Note: string, ≤200 chars (len by unicode chars), stored/returned verbatim.
-- D8 Auth: signup/login only. Password hash = scrypt (hashlib, n=2^12, r=8, p=1, salt 16B random, dklen=64) stored as `scrypt$N$r$p$salt_hex$dk_hex`. Tokens: `tok_<uuid4hex>` → (user_id); multiple per account; never expire. Authorization parse: exact prefix `Bearer ` (case-sensitive scheme `Bearer`? — see item 5), else 401 unauthenticated.
-- D9 Derived handle: email local part, lowercased, each char outside [a-z0-9_] → `_`, truncate 20.
-- D10 Timestamps: `datetime.now(timezone.utc).isoformat(timespec="seconds")` → `...+00:00`. All RFC3339 explicit offset.
-- D11 Feed order: `sorted(key=lambda p: (p["created_at"], p["seq"]), reverse=True)` — seq is a monotonic int per process state, resets on reset; ties on same second broken by seq (spec: unspecified, stable within one snapshot).
-- D12 Pagination: filter → sort desc → total=len; items=total[offset:offset+limit]; has_more = offset+len(items) < total. limit default 50 (1..200), offset default 0 (≥0). Query int params: must match `^[0-9]+$` (rejects `1e9`, `4.0`, `+4`, `-1`), else 422.
-- D13 Idempotency storage: dict keyed by (user_id, method, path, key) → {"body": canonical-json-of-parsed-object, "response": (status, body-dict)}. Claimed at first success; failed attempts (4xx) are never stored. Concurrent same-key identical: loser blocks on global lock, finds entry, returns 200 + stored body. Reuse with different parsed body → 409 idempotency_key_reuse. Replay returns 200 + exact stored body (even if resource later changed). Key validation (1..255 chars) on all five write paths; absent/empty → 400 missing_idempotency_key. Header order per §7: after body-parsed-as-object + auth, before field validation/resource checks.
-- D14 Settlements: body `{"transfers":[1..32 objects]}`. Per-entry validation in input order: handle exists (404 not_found), self-transfer (422 self_payment), amount/note/visibility rules (422 validation_failed) — first bad entry wins. Then affordability: net per wallet from all transfers ≥0 else 409 insufficient_funds. All-or-nothing commit under lock; one created_at (=committed_at) for all members; response payments in input order; settlement_id on members, null elsewhere. Non-operator → 403.
-- D15 Request lifecycle: pay only by payer (else 403), pending only (else 409 request_not_pending) — but replay of a successful pay returns the stored 201 body with 200 (handled by idempotency layer BEFORE the pending check, per §7 ordering). Decline: payer, twice OK (200 current state); paid/cancelled → 409. Cancel: requester, twice OK; paid/declined → 409.
-- D16 Split: participants in given order, duplicates → 422, empty → 422, unknown handle → 404. shares[i] per §9: base=amount//n, first `amount%n` get +1 (amount≥1 so remainder 0..n-1; note fixture helper equal_split handles negative too but split amount ≥1). One request per non-caller participant, caller=requester, note=split note, payer=participant. Request amounts can be 0 (legal, still created).
-- D17 Export/import: GET /_test/export → 200 {"track":"pocketful","format_version":1,"state":S}. POST /_test/import body = exactly that object. Validate: track=="pocketful" (string), format_version==1 (int), state is dict with all keys of the same internal shape (users list, etc.) — invalid → 422, no change. On success replace state atomically. Invalid JSON → 400 malformed_request (per §5 "invalid JSON follows §5").
+## Decisions
+- A1 State: users keep `balance` = **total**. `held(uid)` = sum(amount − captured_amount)
+  over authorizations where from_user==uid, status=="open" and not expired.
+  `available = total − held` (never negative — reset rejects over-seeded holds, and
+  no operation can hold more than available). New State fields: `ttl` (int, default 600),
+  `authorizations` {id -> record}. Record: {authorization_id, from_user_id, to_user_id,
+  amount, captured_amount, note, visibility, status, expires_at (str), expires_dt,
+  payment_id, payment_ids, created_at, seq}.
+- A2 Expiry: `sweep_expired(s)` flips open→expired when expires_dt <= now; called at the
+  top of every handler that reads/writes held, /me, authorizations, payments, request pay,
+  settlements (all already under the global lock). "Even if no request occurred at the
+  deadline" is satisfied because every read re-checks.
+- A3 GET /me: adds total (=balance), available, held.
+- A4 Funds: POST /payments, POST /requests/{id}/pay, POST /settlements,
+  POST /authorizations all check **available**. Settlement affordability:
+  available(uid) + net_delta >= 0 per touched wallet. Captures spend held funds
+  (no available check).
+- A5 POST /authorizations (idem): same shape/order as payments; to_handle required
+  (422) / string (400); 404 unknown; 422 self_payment (same code as payments table);
+  409 insufficient_funds on available. expires_at = created_at + ttl.
+- A6 POST /authorizations/{id}/capture (idem): body {amount?, final?}. Order:
+  404 → 403 (not the receiver) → sweep → status expired→409 authorization_expired,
+  other non-open→409 authorization_not_open → amount rules (omitted=remaining;
+  present: wrong JSON type→400, non-integral/<1→422 validation_failed,
+  >remaining→422 capture_exceeds_authorization) → final must be bool if present (400).
+  Effect: transfer from→to with auth note/visibility, authorization_id set,
+  request_id null; captured_amount+=, payment_ids.append, payment_id=latest;
+  closed (status "captured") iff remaining_after==0 OR final==true.
+- A7 POST /authorizations/{id}/void: no key; only payer (403); 404; already voided→200;
+  captured/expired→409 authorization_not_open.
+- A8 GET /authorizations: direction outgoing=caller is payer, incoming=caller is
+  receiver; status filter over 4 statuses (clock-expired matches expired only);
+  paging identical to /requests.
+- A9 Every authorization response (201 create, capture list items, void 200, GET list)
+  carries remaining_amount = amount − captured_amount (0 when closed), plus
+  payment_id (latest) and payment_ids (all, in order).
+- A10 Payment objects gain `authorization_id` (null when not from a capture).
+  payment_obj uses .get() so stage-1 exports (no such key) still render.
+- A11 Fixture: authorization_ttl_seconds (int>0, default 600; bool rejected);
+  authorizations list (default []): id unique ≤64, from/to reference users,
+  amount integral 1..1e9, note str ≤200 (default ""), visibility (default "public"),
+  status one of 4 (default "open"), expires_at parseable RFC3339 (required),
+  captured_amount int 0..amount (default 0), payment_ids list[str] (default []).
+  Reset error 422 (nothing changed) when some user's unexpired open seeded holds sum
+  over their balance, at reset time.
+- A12 Export/import: state gains ttl + authorizations (with expires_at str,
+  payment_ids, captured_amount). Import accepts stage-1 exports (both omitted →
+  ttl 600, no authorizations). expires_dt re-parsed on import.
+- A13 Idempotency: /authorizations and /authorizations/{id}/capture join the five
+  stage-1 paths through the same _do_write/idem machinery (7 total).
 
-## Decisions (resolved, 2026-10-05)
-- O1 CLOSED — matrix: every field's error per §5. Exceptions (→422): `amount` in ANY form (str/bool/null/wrong-range/non-integral), `note` non-string incl null, `visibility` any value other than "public"/"private" (incl null). All other present-wrong-type fields → 400 malformed_request (e.g. `to_handle: 5`, `participant_handles: "x"`, `transfers: 5`, `email: 5`, `password: 5`). Absent required field → 422 (missing). Unknown fields ignored. Settlement: `transfers` present-but-not-list → 400; absent → 422; non-object entry → 422; per-entry `amount`/`note`/`visibility` follow exceptions (422); `from_handle`/`to_handle` wrong type → 400, absent → 422.
-- O2 CLOSED — order on the five write paths: (1) auth → 401, (2) body parses as JSON object else 400, (3) Idempotency-Key absent/empty → 400 missing_idempotency_key, (4) key length >255 → 422 (BEFORE claim resolution — header-level rule), (5) claim resolution: same user+method+path+key: same parsed body → 200+stored; different body → 409 idempotency_key_reuse, (6) field validation, (7) resource checks, (8) effect + claim stored under the global lock. Claim stored only on the success path (failed keys stay reusable). Consequence accepted: >255-char key replay → 422 (low judge risk).
-- O3 CLOSED — `visibility: null` → 422 (value "other than public/private"); `visibility: 5` → 400 (number, wrong JSON type, not an excepted field case). `note: null`/`note: 5` → 422 (excepted). `amount: null` → 422 (excepted).
-- O4 CLOSED — take FIRST occurrence of repeated params. `limit`/`offset` must match `^[0-9]+$` else 422 (rejects `1e9`, `4.0`, `+4`, `-5`, `abc`); then range (limit 1..200, offset ≥0). `direction` ∈ {incoming, outgoing}, `status` ∈ {pending,paid,declined,cancelled} else 422. /activity ignores unknown params (only limit/offset apply).
-- O5 CLOSED — email valid iff exactly one `@`, local non-empty, domain non-empty, no whitespace. No dot required.
-- O6 CLOSED — `display_name` optional, default ""; must be string if present (else 400); no length cap.
-- O7 CLOSED — emails compared/stored verbatim (case-sensitive). Only the handle derivation lowercases.
-- O8 CLOSED — reset fixture validation (all → 422 validation_failed, nothing changed): body must be JSON object (else 400); currency non-empty string; minor_units int ∈ {0,2,3}; users list of objects: id string 1..64 (unique), email non-empty string (unique), password string, display_name string default "", handle matching ^[a-z0-9_]{1,20}$ (unique), balance integral int ≥ 0 (reject bool/str/non-integral; huge >2^53 rejected); payments list: id string 1..64 (unique), from_user_id/to_user_id string referencing seeded users (404-style → 422 here: validation_failed), amount integral 1..1e9, note string ≤200 (default ""), visibility ∈ {public, private} (default "public"); requests list: id string 1..64 (unique), requester_id/payer_id string referencing users, amount integral 1..1e9, note string ≤200 (default ""), status ∈ 4 statuses (default "pending"); settlement_operator_ids optional list of user ids (default []). Duplicate id/handle/email anywhere → 422. Self-payment/self-request in fixture: allowed (consistency not judgeable).
-- O9 CLOSED — request object = {request_id, requester_id, requester_handle, payer_id, payer_handle, amount, currency, note, status, payment_id, created_at} everywhere (201s, lists, split responses).
-- O10 CLOSED — seeded payments ARE feed items, created_at = reset instant, seq in fixture order. (Shipped test `test_seeded_payments_respect_the_feed_contract` confirms: seeded private payment visible to parties, hidden from third party.)
-- O11 CLOSED — seeded requests in GET /requests, created_at = reset instant, seq in fixture order.
-- O12 CLOSED — unknown path OR wrong method on known path → 404 not_found envelope.
-- O13 CLOSED — read exactly Content-Length bytes (cap 32 MiB → 400 if exceeded/invalid). Missing Content-Length on POST = empty body = not a JSON object → 400.
-- O14 CLOSED — scheme "Bearer" case-insensitive, exactly one space, non-empty token; anything else / unknown token → 401 unauthenticated.
-- O15 CLOSED — net per wallet = incoming − outgoing across all entries; wallets untouched stay as-is; affordability = all nets ≥ 0.
-- O16 CLOSED — idempotency key includes (user_id, method, path); path = URL path without query string.
-- O17 CLOSED — state stores `seq` counter; import validates and adopts it; new items always get seq+1.
-- O18 CLOSED — signup returns a fresh token; new user balance 0.
-- O19 CLOSED — pay body: object; unknown fields ignored; only `visibility` has effect (default "public").
-- O20 CLOSED — settlement entry: amount 1..1e9 (422), note optional ≤200 (422), visibility optional ∈ {public,private} (422), from_handle/to_handle required non-empty strings (wrong type 400 / absent 422 / unknown 404 / self 422 self_payment). Per-entry error precedence: unknown handle (404) → self (422) → amount/note/visibility (422); first bad entry in input order; affordability (409) only after all entries validate. Operator check (403) before claim resolution; 4xx claims no key.
-- O21 (new) settlement response = {settlement_id, committed_at, payments: [full payment objects, input order]}; members carry settlement_id, every other payment object in the system carries settlement_id: null (always present).
-- O22 (new) login: missing/wrong-type email or password → 400 malformed_request; email form invalid → 422 validation_failed; wrong password or unknown email → 401 unauthenticated (shipped table).
-- O23 (new) export/import: import body must be object with track=="pocketful", format_version==1 (int, not bool), state == valid state shape (validated like reset + tokens/idempotency/seq); invalid → 422, no change. Export = 200 {"track","format_version","state"}; state = internal State dict (users incl. password hashes, tokens, idempotency store, seq, counters, operators, currency). Reset = new state from fixture (clears imported data).
-- O24 (new) scrypt params n=2**12, r=8, p=1, salt 16B, dklen=64 — fast enough for the 10-client login burst, still a strong KDF.
+## UI decisions
+- U1 Server-rendered HTML (no client-side rendering needed), one shared stylesheet,
+  all data-testids per spec. JS only for: form submits via fetch, live split preview,
+  in-place refreshes, idempotency-key derivation, latest-refresh-wins.
+- U2 Auth: login/signup set HttpOnly cookie `pocketful_session` = bearer token
+  (same token store → survives export/import). resolve_caller: Authorization header
+  first, then cookie. Logout = POST /auth/logout clears the cookie.
+- U3 Accept sniffing: GET /requests and /authorizations → HTML iff Accept contains
+  text/html, else JSON (existing handler). All other UI routes render HTML always.
+- U4 Money format: mu==0 → "1200 JPY"; else "N.nn EUR" (groupless decimal, exactly
+  mu places). data-amount = raw minor units.
+- U5 Idempotency key derivation (client): SHA-256 hex (64 chars) of
+  `path + canonical(body)` — deterministic per form values, so unchanged resubmit
+  replays (200, no double money) and any field change mints a new key. FNV-1a
+  fallback if crypto.subtle is unavailable.
+- U6 Pay/authorize forms keep their values after success; on 4xx show *-error and
+  refresh balance/feed (inputs preserved); on network failure/timeout show
+  *-uncertain (not error), keep retryable with the same derived key.
+- U7 wallet-refresh: monotonically increasing seq; a refresh response is applied
+  only if its seq is still the highest issued (latest wins, out-of-order safe).
+- U8 Split preview: client-side §9 equal split on input (same rule as server);
+  one split-share-{handle} per participant in given order; submit uses server result.
+- U9 /requests buttons: pay (derived key from request id), decline, cancel;
+  on any outcome re-render the lists; refusals also show request-error.
+- U10 Visual system: system font stack, calm palette (ink/slate + one accent),
+  available funds as the headline number (largest type), total/held secondary,
+  status chips, direction arrows (in/out), visibility dot (public/private),
+  labeled inputs, visible focus rings, 375px-clean single column, no h-scroll.
 
-## Learned during verification (s1-run-1 → s1-run-2)
-- Missing required fields (`to_handle`, `payer_handle`, `email`, `password`,
-  settlement `from_handle`/`to_handle`) are 422 validation_failed per the
-  §5 table; the 400/wrong-type rule only applies to PRESENT fields of the
-  wrong JSON type. This was the only failure in s1-run-1 (146/147); fixed,
-  s1-run-2 = 147/147.
-
-## Risks / watch-list
-- R1 Hidden judge tests beyond shipped stage_1 files (kickoff ships partial suites). Rely on spec text, especially §5 error matrix and §7 ordering.
-- R2 "Failed request keys remain reusable": ensure 4xx claim never happens (claim only on success path, under lock, after effect applied).
-- R3 "Existing receipts, tokens and retries must remain valid after import" — export must include tokens + idempotency store (it does by D3/D13 shape).
-- R4 Concurrency: 50 in-flight on 2 vCPU; global lock means CPU-bound critical sections only (dict ops) — fine. scrypt on login is OUTSIDE the global lock (read-only check) — fine.
-- R5 ThreadingHTTPServer default timeout: keep-alive supported; httpx uses connection pooling — ensure handler closes/keeps-alive correctly. Base class does this; set protocol_version = "HTTP/1.1" and always send Content-Length.
+## Open items (resolve before first harness run)
+- [ ] O1: `final` wrong type (e.g. "true") → 400 malformed_request? (no field-exception
+      listed; keep 400). Risk: low.
+- [ ] O2: seeded auth `expires_at` naive (no offset) → treat as UTC and accept.
+- [ ] O3: UI / when not signed in → 302 to /login (no 401 HTML).
+- [ ] O4: activity-note element for empty note: render element with empty text
+      (no placeholder text that would change text_content).
