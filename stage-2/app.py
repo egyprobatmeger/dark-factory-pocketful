@@ -1356,11 +1356,18 @@ class Handler(BaseHTTPRequestHandler):
         except UnicodeDecodeError:
             return "", True
 
+    UI_GET_ROUTES = ("/", "/requests", "/split", "/signup", "/login",
+                     "/authorizations")
+
     def _handle(self, method):
         try:
             parts = urlsplit(self.path)
             path = parts.path
             q = parse_query(parts.query)
+            if method == "GET" and path in self.UI_GET_ROUTES and \
+                    self._wants_html():
+                self._ui_page(path)
+                return
             caller, body, bad = self._preauth(method, path)
             if bad:
                 return
@@ -1405,6 +1412,32 @@ class Handler(BaseHTTPRequestHandler):
             caller = resolve_caller(self.headers, state())
         return caller, body, False
 
+    def _ui_refresh_fragments(self, caller):
+        with _LOCK:
+            s = state()
+            now_dt = datetime.now(timezone.utc)
+            s.sweep_expired(now_dt)
+            u = s.users[caller]
+            held = s.held(caller, now_dt)
+            dm = {
+                "user": u, "handle": u["handle"], "mu": s.minor_units,
+                "cur": s.currency, "total": u["balance"],
+                "available": u["balance"] - held, "held": held,
+            }
+            rows = [p for p in s.payments.values()
+                    if p["visibility"] == "public" or p["from_user_id"] == caller
+                    or p["to_user_id"] == caller]
+            rows.sort(key=lambda p: (p["created_at"], p["seq"]), reverse=True)
+            dm["payments"] = [payment_obj(s, p) for p in rows[:200]]
+            frag_wallet = ui.wallet_card(dm)
+            frag_feed = ui.feed_card(dm)
+        html_text = (
+            '<html><body>'
+            '<div data-fragment="wallet">{}</div>'
+            '<div data-fragment="feed">{}</div>'
+            '</body></html>'.format(frag_wallet, frag_feed))
+        self._send_html(200, html_text)
+
     def _dispatch(self, method, path, q, caller, body):
         # UI routes (HTML) and UI action endpoints
         if self._wants_html() and path in ("/", "/requests", "/split", "/signup",
@@ -1412,6 +1445,9 @@ class Handler(BaseHTTPRequestHandler):
             return self._ui_page(path)
         if method == "POST" and path == "/auth/logout":
             return self._ui_logout()
+        if method == "GET" and path == "/api/ui/refresh":
+            self._ui_refresh_fragments(caller)
+            return None
         if method == "GET" and path == "/me":
             return get_me(None, caller)
         if method == "GET" and path == "/requests":

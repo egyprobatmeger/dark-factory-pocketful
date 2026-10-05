@@ -124,7 +124,8 @@ textarea{resize:vertical;min-height:44px}
 .amount-wrap input{padding-right:64px;font-variant-numeric:tabular-nums}
 .amount-wrap .unit{position:absolute;right:12px;top:50%;transform:translateY(-50%);
   color:var(--muted);font-size:13px;font-weight:650;pointer-events:none}
-.error{display:none;background:var(--danger-bg);color:var(--danger);border-radius:10px;
+.err-slot:empty{display:none}
+.error{background:var(--danger-bg);color:var(--danger);border-radius:10px;
   padding:10px 12px;font-size:14px;font-weight:600;margin-bottom:14px}
 .error.show{display:block}
 .form-foot{display:flex;align-items:center;gap:12px;margin-top:4px}
@@ -247,7 +248,7 @@ def render_login(error_msg=None):
 <h1>Log in</h1>
 <p class="auth-sub">Welcome back to Pocketful.</p>
 {err}
-<form method="post" action="/login" data-action="login">
+<form data-form="login">
   <div class="field"><label for="le">Email</label>
     <input type="email" id="le" data-testid="login-email" name="email" required autocomplete="email"></div>
   <div class="field"><label for="lp">Password</label>
@@ -256,7 +257,7 @@ def render_login(error_msg=None):
 </form>
 <p class="auth-foot">New here? <a href="/signup">Create an account</a></p>
 </div>""".format(err=err)
-    return shell("Log in", "login", content)
+    return shell("Log in", "login", content, client=CLIENT_JS)
 
 
 def render_signup(error_msg=None):
@@ -267,7 +268,7 @@ def render_signup(error_msg=None):
 <h1>Create your account</h1>
 <p class="auth-sub">One wallet, ready to move money.</p>
 {err}
-<form method="post" action="/signup" data-action="signup">
+<form data-form="signup">
   <div class="field"><label for="se">Email</label>
     <input type="email" id="se" data-testid="signup-email" name="email" required autocomplete="email"></div>
   <div class="field"><label for="sd">Display name</label>
@@ -279,7 +280,7 @@ def render_signup(error_msg=None):
 </form>
 <p class="auth-foot">Already have an account? <a href="/login">Log in</a></p>
 </div>""".format(err=err)
-    return shell("Sign up", "signup", content)
+    return shell("Sign up", "signup", content, client=CLIENT_JS)
 
 
 def wallet_card(dm):
@@ -335,8 +336,8 @@ def visibility_field(prefix):
 def pay_card(dm):
     return """<form class="card" data-form="pay" method="post" action="/api/ui/pay">
 <h2>Send money</h2>
-<p class="error" data-testid="pay-error" role="alert"></p>
-<p class="error" data-testid="pay-uncertain" role="alert"></p>
+<div class="err-slot" data-slot="pay-error"></div>
+<div class="err-slot" data-slot="pay-uncertain"></div>
 {handle}{amount}{note}{vis}
 <div class="form-foot">
   <button type="submit" class="btn btn-primary" data-testid="pay-submit">Send payment</button>
@@ -354,7 +355,7 @@ def pay_card(dm):
 def request_card(dm):
     return """<form class="card" data-form="request" method="post" action="/api/ui/request">
 <h2>Ask for money</h2>
-<p class="error" data-testid="request-error" role="alert"></p>
+<div class="err-slot" data-slot="request-error"></div>
 {handle}{amount}{note}
 <div class="form-foot">
   <button type="submit" class="btn" data-testid="request-submit">Send request</button>
@@ -370,7 +371,7 @@ def request_card(dm):
 def authorize_card(dm):
     return """<form class="card" data-form="authorize" method="post" action="/api/ui/authorize">
 <h2>Authorize payment</h2>
-<p class="error" data-testid="authorize-error" role="alert"></p>
+<div class="err-slot" data-slot="authorize-error"></div>
 {handle}{amount}{note}{vis}
 <div class="form-foot">
   <button type="submit" class="btn btn-primary" data-testid="authorize-submit">Authorize</button>
@@ -473,24 +474,29 @@ def request_item(dm, r):
 
 
 def render_requests(dm):
-    def block(title, rows, testid):
-        if rows:
-            body = '<div class="list">{}</div>'.format(
-                "".join(request_item(dm, r) for r in rows))
-        else:
-            body = ""
-        return """<div>
-  <div class="section-title">{title}</div>
-  <div class="card" style="margin-bottom:24px">{empty}{body}</div>
-</div>""".format(title=title, body=body,
-                 empty=('<div class="empty" data-testid="{}">Nothing here.</div>'
-                        .format(testid)) if not rows else "")
+    empty = ""
+    if not dm["incoming"] and not dm["outgoing"]:
+        empty = """<div class="card" style="margin-bottom:24px">
+  <div class="empty" data-testid="empty-requests">
+    <b>No requests yet.</b><br>Money you ask for, and people who ask you, show up here.
+  </div>
+</div>"""
+    inc = "".join(request_item(dm, r) for r in dm["incoming"]) or \
+        '<div class="empty">No incoming requests.</div>'
+    out = "".join(request_item(dm, r) for r in dm["outgoing"]) or \
+        '<div class="empty">No outgoing requests.</div>'
     content = """<div class="page-head"><h1>Requests</h1>
   <p>Pay, decline or cancel — money only moves when you pay.</p></div>
-  <p class="error" data-testid="request-error" role="alert" style="margin-top:0"></p>
-  {incoming}{outgoing}""".format(
-        incoming=block("Incoming — you pay", dm["incoming"], "incoming-list"),
-        outgoing=block("Outgoing — you asked", dm["outgoing"], "outgoing-list"))
+  <div class="err-slot" data-slot="request-error" style="margin-top:0"></div>
+  {empty}
+  <div class="section-title">Incoming — you pay</div>
+  <div class="card" style="margin-bottom:24px">
+    <div class="list" data-testid="incoming-list">{inc}</div>
+  </div>
+  <div class="section-title">Outgoing — you asked</div>
+  <div class="card" style="margin-bottom:24px">
+    <div class="list" data-testid="outgoing-list">{out}</div>
+  </div>""".format(empty=empty, inc=inc, out=out)
     return shell("Requests", "requests", content, user=dm["user"], client=CLIENT_JS,
                  mu=dm["mu"], cur=dm["cur"])
 
@@ -499,7 +505,7 @@ def render_split(dm):
     content = """<div class="page-head"><h1>Split a bill</h1>
   <p>Enter the total and the people, in order. Pocketful works out exact shares.</p></div>
 <div class="card">
-  <p class="error" data-testid="split-error" role="alert"></p>
+  <div class="err-slot" data-slot="split-error"></div>
   <div class="field"><label for="split-amount">Total amount</label>
     <div class="amount-wrap"><input type="text" id="split-amount" data-testid="split-amount"
       name="amount" inputmode="decimal" autocomplete="off" placeholder="0.00"></div></div>
@@ -564,15 +570,14 @@ def authz_item(dm, a):
 
 
 def render_authorizations(dm):
-    if dm["authorizations"]:
-        body = '<div class="list" data-testid="authorization-list">{}</div>'.format(
-            "".join(authz_item(dm, a) for a in dm["authorizations"]))
-    else:
-        body = """<div class="empty" data-testid="empty-authorizations">
+    items = "".join(authz_item(dm, a) for a in dm["authorizations"])
+    if not items:
+        items = """<div class="empty" data-testid="empty-authorizations">
   <b>No authorizations yet.</b><br>Authorise a payment from your wallet to reserve funds.</div>"""
+    body = '<div class="list" data-testid="authorization-list">{}</div>'.format(items)
     content = """<div class="page-head"><h1>Authorizations</h1>
   <p>Reserved funds: capture what you earned, or void what you set aside.</p></div>
-  <p class="error" data-testid="authorization-error" role="alert" style="margin-top:0"></p>
+  <div class="err-slot" data-slot="authorization-error" style="margin-top:0"></div>
   <div class="card">{body}</div>""".format(body=body)
     return shell("Authorizations", "authorizations", content, user=dm["user"],
                  client=CLIENT_JS, mu=dm["mu"], cur=dm["cur"])
@@ -638,16 +643,31 @@ CLIENT_JS = r"""
     if (r && r.status) return "Something went wrong (code " + r.status + ").";
     return "Something went wrong.";
   }
-  function show(el, msg){ el.textContent = msg; el.classList.add("show"); }
-  function hide(el){ if (el) { el.textContent = ""; el.classList.remove("show"); } }
+  function show(slot, msg){
+    var slotEl = document.querySelector('[data-slot="' + slot + '"]');
+    if (!slotEl) return;
+    var el = slotEl.querySelector('[data-testid="' + slot + '"]');
+    if (!el) {
+      el = document.createElement("p");
+      el.className = "error";
+      el.setAttribute("role", "alert");
+      el.setAttribute("data-testid", slot);
+      slotEl.appendChild(el);
+    }
+    el.textContent = msg;
+  }
+  function hide(slot){
+    var el = document.querySelector('[data-slot="' + slot + '"] [data-testid="' + slot + '"]');
+    if (el) el.remove();
+  }
 
   var refreshSeq = 0;
   function renderFragments(html){
     var doc = new DOMParser().parseFromString(html, "text/html");
     var out = {};
-    var w = doc.querySelector('[data-testid="wallet"]');
+    var w = doc.querySelector('[data-fragment="wallet"] > *');
     if (w) out.wallet = w;
-    var f = doc.querySelector('[data-testid="feed-card"]');
+    var f = doc.querySelector('[data-fragment="feed"] > *');
     if (f) out.feed = f;
     return out;
   }
@@ -685,12 +705,10 @@ CLIENT_JS = r"""
     if (!form) return;
     form.addEventListener("submit", async function(ev){
       ev.preventDefault();
-      var errEl = form.querySelector('[data-testid="pay-error"]');
-      var uncEl = form.querySelector('[data-testid="pay-uncertain"]');
-      hide(errEl); hide(uncEl);
+      hide("pay-error"); hide("pay-uncertain");
       var v = formVals(form);
       var minor = parseAmount(v.amount);
-      if (minor === null) { show(errEl, "Enter a valid amount (up to " +
+      if (minor === null) { show("pay-error", "Enter a valid amount (up to " +
         (MU ? MU : 0) + " decimal place" + (MU === 1 ? "" : "s") + ")."); return; }
       var body = {to_handle: v.handle.trim(), amount: minor};
       if (v.note) body.note = v.note;
@@ -703,13 +721,13 @@ CLIENT_JS = r"""
         var r = await api("/payments", body, key);
         if (r.ok) { refreshPage(); }
         else if (r.status >= 400 && r.status < 500) {
-          show(errEl, errText(r)); refreshPage();
+          show("pay-error", errText(r)); refreshPage();
         } else {
-          show(uncEl, "We're not sure the payment went through. Check your balance, " +
+          show("pay-uncertain", "We're not sure the payment went through. Check your balance, " +
             "then send again with the same details to retry.");
         }
       } catch (e) {
-        show(uncEl, "Network error — the payment may have gone through. " +
+        show("pay-uncertain", "Network error — the payment may have gone through. " +
           "Check your balance, then retry with the same details.");
       }
       btn.disabled = false;
@@ -720,17 +738,16 @@ CLIENT_JS = r"""
     if (!form) return;
     form.addEventListener("submit", async function(ev){
       ev.preventDefault();
-      var errEl = form.querySelector('[data-testid="request-error"]');
-      hide(errEl);
+      hide("request-error");
       var v = formVals(form);
       var minor = parseAmount(v.amount);
-      if (minor === null) { show(errEl, "Enter a valid amount."); return; }
+      if (minor === null) { show("request-error", "Enter a valid amount."); return; }
       var body = {payer_handle: v.handle.trim(), amount: minor};
       if (v.note) body.note = v.note;
       var key = await keyFor("request", {handle: v.handle.trim(), amount: minor, note: v.note});
       var r = await api("/requests", body, key);
       if (r.ok) { refreshPage(); }
-      else if (r.status >= 400 && r.status < 500) { show(errEl, errText(r)); }
+      else if (r.status >= 400 && r.status < 500) { show("request-error", errText(r)); }
     });
   }
   function wireAuthorize(){
@@ -738,18 +755,17 @@ CLIENT_JS = r"""
     if (!form) return;
     form.addEventListener("submit", async function(ev){
       ev.preventDefault();
-      var errEl = form.querySelector('[data-testid="authorize-error"]');
-      hide(errEl);
+      hide("authorize-error");
       var v = formVals(form);
       var minor = parseAmount(v.amount);
-      if (minor === null) { show(errEl, "Enter a valid amount."); return; }
+      if (minor === null) { show("authorize-error", "Enter a valid amount."); return; }
       var body = {to_handle: v.handle.trim(), amount: minor, visibility: v.visibility};
       if (v.note) body.note = v.note;
       var key = await keyFor("authorize", {handle: v.handle.trim(), amount: minor,
         note: v.note, visibility: v.visibility});
       var r = await api("/authorizations", body, key);
       if (r.ok) { refreshPage(); }
-      else if (r.status >= 400 && r.status < 500) { show(errEl, errText(r)); }
+      else if (r.status >= 400 && r.status < 500) { show("authorize-error", errText(r)); }
     });
   }
 
@@ -760,8 +776,7 @@ CLIENT_JS = r"""
     var hs = document.querySelector('[data-testid="split-handles"]');
     var nt = document.querySelector('[data-testid="split-note"]');
     var pv = document.querySelector('[data-testid="split-preview"]');
-    var errEl = document.querySelector('[data-testid="split-error"]');
-    function handles(){
+        function handles(){
       return hs.value.split(",").map(function(s){ return s.trim(); })
         .filter(function(s){ return s.length; });
     }
@@ -784,25 +799,25 @@ CLIENT_JS = r"""
     am.addEventListener("input", preview);
     hs.addEventListener("input", preview);
     document.querySelector('[data-testid="split-submit"]').addEventListener("click", async function(){
-      hide(errEl);
+      hide("split-error");
       var minor = parseAmount(am.value);
       var list = handles();
-      if (minor === null) { show(errEl, "Enter a valid total amount."); return; }
-      if (!list.length) { show(errEl, "Add at least one handle."); return; }
+      if (minor === null) { show("split-error", "Enter a valid total amount."); return; }
+      if (!list.length) { show("split-error", "Add at least one handle."); return; }
       var body = {amount: minor, participant_handles: list};
       if (nt.value) body.note = nt.value;
       var key = await keyFor("split", {amount: minor, handles: list.join(","), note: nt.value});
       var r = await api("/splits", body, key);
       if (r.ok) { location.assign("/requests"); }
-      else if (r.status >= 400 && r.status < 500) { show(errEl, errText(r)); }
+      else if (r.status >= 400 && r.status < 500) { show("split-error", errText(r)); }
       else { location.assign("/requests"); }
     });
   }
 
-  async function actionResult(r, errEl){
+  async function actionResult(r, slot){
     if (r.ok) return true;
-    if (r.status >= 400 && r.status < 500) { show(errEl, errText(r)); return false; }
-    show(errEl, "Network error — the action may have gone through.");
+    if (r.status >= 400 && r.status < 500) { show(slot, errText(r)); return false; }
+    show(slot, "Network error — the action may have gone through.");
     return false;
   }
   async function rerender(page){
@@ -821,8 +836,7 @@ CLIENT_JS = r"""
       .forEach(function(btn){
         btn.addEventListener("click", async function(){
           var rid = btn.getAttribute("data-rid"), act = btn.getAttribute("data-act");
-          var errEl = document.querySelector('[data-testid="request-error"]');
-          if (errEl) hide(errEl);
+          hide("request-error");
           var r;
           if (act === "pay") {
             var key = await keyFor("requestpay", {rid: rid});
@@ -830,7 +844,7 @@ CLIENT_JS = r"""
           } else {
             r = await api("/requests/" + rid + "/" + act, {});
           }
-          var ok = await actionResult(r, errEl);
+          var ok = await actionResult(r, "request-error");
           if (ok || (r.status >= 400 && r.status < 500)) await rerender("/requests");
         });
       });
@@ -841,26 +855,24 @@ CLIENT_JS = r"""
         if (!btn.classList.contains("btn")) return;
         btn.addEventListener("click", async function(){
           var aid = btn.getAttribute("data-aid");
-          var errEl = document.querySelector('[data-testid="authorization-error"]');
-          if (errEl) hide(errEl);
+          hide("authorization-error");
           var input = document.querySelector('[data-testid="authorization-capture-amount-' + aid + '"]');
           var body = {};
           if (input) {
             var minor = parseAmount(input.value);
-            if (minor === null) { show(errEl, "Enter a valid capture amount."); return; }
+            if (minor === null) { show("authorization-error", "Enter a valid capture amount."); return; }
             body.amount = minor;
           }
           var key = await keyFor("capture", {aid: aid, amount: body.amount || "remaining"});
           var r = await api("/authorizations/" + aid + "/capture", body, key);
-          var ok = await actionResult(r, errEl);
+          var ok = await actionResult(r, "authorization-error");
           if (ok || (r.status >= 400 && r.status < 500)) await rerender("/authorizations");
         });
       });
     document.querySelectorAll('[data-testid^="authorization-void-"]').forEach(function(btn){
       btn.addEventListener("click", async function(){
         var aid = btn.getAttribute("data-aid");
-        var errEl = document.querySelector('[data-testid="authorization-error"]');
-        if (errEl) hide(errEl);
+        hide("authorization-error");
         var r = await api("/authorizations/" + aid + "/void", {});
         var ok = await actionResult(r, errEl);
         if (ok || (r.status >= 400 && r.status < 500)) await rerender("/authorizations");
@@ -871,9 +883,42 @@ CLIENT_JS = r"""
     var b = document.querySelector('[data-testid="logout-button"]');
     if (b) b.addEventListener("click", function(){ location.assign("/auth/logout"); });
   }
+  function authMessage(r){
+    if (r && r.data && r.data.error) {
+      var code = r.data.error.code;
+      if (code === "email_taken") return "An account with that email already exists.";
+      if (code === "handle_taken") return "That account name is already taken.";
+      if (code === "unauthenticated") return "Incorrect email or password.";
+      if (code === "validation_failed") return "Check your details — the email must be valid and the password at least 8 characters.";
+    }
+    return "Something went wrong. Please try again.";
+  }
+  function wireAuthForms(){
+    document.querySelectorAll('[data-form="login"],[data-form="signup"]').forEach(function(form){
+      form.addEventListener("submit", async function(ev){
+        ev.preventDefault();
+        var old = document.querySelector('[data-testid="auth-error"]');
+        if (old) old.remove();
+        var v = formVals(form);
+        var body = {email: v.email, password: v.password};
+        if (form.getAttribute("data-form") === "signup") body.display_name = v.display_name;
+        var path = form.getAttribute("data-form") === "login" ? "/auth/login" : "/auth/signup";
+        var r = await api(path, body, "");
+        if (r.ok) { location.assign("/"); }
+        else {
+          var el = document.createElement("p");
+          el.className = "error";
+          el.setAttribute("role", "alert");
+          el.setAttribute("data-testid", "auth-error");
+          el.textContent = authMessage(r);
+          form.insertBefore(el, form.firstChild);
+        }
+      });
+    });
+  }
   function wireAll(){
     wireRefresh(); wirePay(); wireRequest(); wireAuthorize();
-    wireSplit(); wireRequests(); wireAuthz(); wireLogout();
+    wireSplit(); wireRequests(); wireAuthz(); wireLogout(); wireAuthForms();
   }
   wireAll();
 })();
