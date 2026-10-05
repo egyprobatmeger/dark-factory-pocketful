@@ -1,0 +1,12 @@
+# Render Blueprint for the Pocketful demo (free plan).
+# Assumes this folder is the root of the repository Render builds
+# (or set the service Root Directory to this folder in the dashboard).
+# Render injects its own PORT env var; app.py binds $PORT, and start.sh
+# seeds the demo accounts on every cold start.
+services:
+  - type: web
+    name: pocketful-demo
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /health
